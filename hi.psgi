@@ -32,8 +32,7 @@ my $app = \&main;
 use Plack::Builder;
 
 builder {
-  #enable 'Debug', panels => [qw( EBug )];
-  enable 'Debug::EBug';
+  enable 'Scrutiny';
   $app;
 };
 

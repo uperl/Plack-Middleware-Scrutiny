@@ -1,4 +1,4 @@
-package Plack::Middleware::Debug::EBug;
+package Plack::Middleware::Debug::Scrutiny;
 
 # Connect with: socat READL-LISTEN:8080,reuseaddr
 
@@ -113,7 +113,7 @@ sub manage_child {
   my ($self) = @_;
   my $to_parent = $self->{to_parent};
   my $from_parent = $self->{from_parent};
-  my $input = Plack::Middleware::Debug::EBug::IOWrap->new( manager => $self );
+  my $input = Plack::Middleware::Debug::Scrutiny::IOWrap->new( manager => $self );
   while(1) {
     print STDERR "child: waiting for env\n";
     my ($cmd, $env) = $self->receive('from_parent');
@@ -132,7 +132,7 @@ sub manage_child {
   }
 }
 
-package Plack::Middleware::Debug::EBug::IOWrap;
+package Plack::Middleware::Debug::Scrutiny::IOWrap;
 
 sub new {
   my $class = shift;
