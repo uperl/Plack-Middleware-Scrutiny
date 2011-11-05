@@ -7,6 +7,7 @@ use Plack::Request;
 sub main {
   my $env = shift;
   my $q = Plack::Request->new($env);
+  my $name = $q->param('name');
   use Data::Dumper;
   print STDERR "app: got " . Dumper($env);
   print STDERR "hello!\n";
@@ -17,6 +18,7 @@ sub main {
       <html>
         <body>
           hello @{[ $q->param('name') ]}<br/>
+          also, hello $name<br/>
           <form method=POST>
             <input type=text name=name>
             <input type=submit>
