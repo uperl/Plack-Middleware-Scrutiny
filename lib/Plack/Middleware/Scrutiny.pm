@@ -12,34 +12,6 @@ use Storable qw( freeze thaw );
 use Data::Dumper;
 use Debug::Client;
 
-sub start_child {
-  my ($self) = @_;
-  my ($to_child,  $from_child);
-  my ($to_parent, $from_parent);
-
-  pipe($from_child,  $to_parent);
-  pipe($from_parent, $to_child);
-
-  $to_child->autoflush(1);
-  $to_parent->autoflush(1);
-  STDERR->autoflush(1);
-
-  $self->{to_child}    = $to_child;
-  $self->{to_parent}   = $to_parent;
-  $self->{from_child}  = $from_child;
-  $self->{from_parent} = $from_parent;
-
-  my $pid = fork();
-  if(!$pid) {
-    # child
-    $self->manage_child;
-  } else {
-    # parent
-    print STDERR "parent: saving child pid $pid\n";
-    $self->{child_pid} = $pid;
-  }
-}
-
 sub call {
   my($self, $env) = @_;
   print STDERR "parent: got ->call\n";
@@ -130,6 +102,14 @@ sub in_debugger {
   my $out;
   print STDERR "parent: sending $cmd to debugger\n";
   $out = $self->{debug_client}->$cmd;
+  
+  # Child has completed? If so just give that back
+  if($self->{response}) {
+    print STDERR "parent: got response, sending to browser\n";
+    $self->{in_debugger} = 0;
+    delete $self->{debug_client};
+    $respond->($self->{response});
+  }
 
   $respond->([
     200,
@@ -138,6 +118,11 @@ sub in_debugger {
       <html>
         <body>
           <h1>Scrutiny!</h1>
+          <a href="?cmd=step_in">Step In</a>
+          <a href="?cmd=step_over">Step Over</a>
+          <a href="?cmd=run">Run</a>
+          <a href="?cmd=get_stack_trace">Stacktrace</a>
+          <a href="?cmd=get_stack_trace">Stacktrace</a>
           <pre>$out</pre>
         </body>
       </html>
@@ -178,6 +163,33 @@ sub receive {
   return ($cmd, $val);
 }
 
+sub start_child {
+  my ($self) = @_;
+  my ($to_child,  $from_child);
+  my ($to_parent, $from_parent);
+
+  pipe($from_child,  $to_parent);
+  pipe($from_parent, $to_child);
+
+  $to_child->autoflush(1);
+  $to_parent->autoflush(1);
+
+  $self->{to_child}    = $to_child;
+  $self->{to_parent}   = $to_parent;
+  $self->{from_child}  = $from_child;
+  $self->{from_parent} = $from_parent;
+
+  my $pid = fork();
+  if(!$pid) {
+    # child
+    $self->manage_child;
+  } else {
+    # parent
+    print STDERR "parent: saving child pid $pid\n";
+    $self->{child_pid} = $pid;
+  }
+}
+
 sub manage_child {
   my ($self) = @_;
   my $to_parent = $self->{to_parent};
@@ -216,8 +228,8 @@ sub read {
   my ($self, $buf, $len, $offset) = @_;
   $self->{manager}->send( to_parent => read => [$len, $offset] );
   my ($cmd, $val) = $self->{manager}->receive('from_parent');
-    require Enbugger;
-    Enbugger->stop;
+    # require Enbugger;
+    # Enbugger->stop;
   my ($bufval, $retval) = @$val;
   $_[1] = $bufval;
   return $retval;
@@ -227,8 +239,8 @@ sub seek {
   my ($self, $position, $whence) = @_;
   $self->{manager}->send( to_parent => seek => [$position, $whence] );
   my ($cmd, $val) = $self->{manager}->receive('from_parent');
-    require Enbugger;
-    Enbugger->stop;
+    # require Enbugger;
+    # Enbugger->stop;
   my ($retval) = @$val;
   return $retval;
 }
