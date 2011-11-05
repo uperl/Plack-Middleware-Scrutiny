@@ -2,16 +2,32 @@
 
 use v5.14;
 
-my $app = sub {
+use Plack::Request;
+
+sub main {
   my $env = shift;
+  my $q = Plack::Request->new($env);
   use Data::Dumper;
   print STDERR "app: got " . Dumper($env);
+  print STDERR "hello!\n";
   return [
     200,
     ['Content-type' => 'text/html'],
-    ['<html><body>hello</body></html>']
+    [qq|
+      <html>
+        <body>
+          hello @{[ $q->param('name') ]}<br/>
+          <form method=POST>
+            <input type=text name=name>
+            <input type=submit>
+          </form>
+        </body>
+      </html>
+    |]
   ];
 };
+
+my $app = \&main;
 
 use Plack::Builder;
 

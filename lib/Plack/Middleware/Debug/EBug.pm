@@ -1,5 +1,7 @@
 package Plack::Middleware::Debug::EBug;
 
+# Connect with: socat READL-LISTEN:8080,reuseaddr
+
 use strict;
 use warnings;
 use parent qw(Plack::Middleware);
@@ -11,19 +13,17 @@ use Data::Dumper;
 
 sub prepare_app {
   my ($self) = @_;
-  my ($to_child, $from_child);
+  my ($to_child,  $from_child);
   my ($to_parent, $from_parent);
 
-  pipe($from_child, $to_parent);
+  pipe($from_child,  $to_parent);
   pipe($from_parent, $to_child);
 
   $to_child->autoflush(1);
   $to_parent->autoflush(1);
-  # $from_child->autoflush(1);
-  # $from_parent->autoflush(1);
 
-  $self->{to_child}  = $to_child;
-  $self->{to_parent} = $to_parent;
+  $self->{to_child}    = $to_child;
+  $self->{to_parent}   = $to_parent;
   $self->{from_child}  = $from_child;
   $self->{from_parent} = $from_parent;
 
@@ -51,50 +51,110 @@ sub call {
   delete $env2->{'psgix.io'};
   delete $env2->{'psgi.errors'};
 
-  print STDERR Dumper($env);
-  my $env_store = freeze($env2);
-  $env_store = unpack("h*",$env_store);
-  print STDERR "parent: sending [$env_store]\n";
-  print $to_child $env_store;
-  print $to_child "\n";
+  $self->send( to_child => request => $env2 );
 
-  print STDERR "parent: waiting for response\n";
-  my $response_frozen = <$from_child>;
-  chomp $response_frozen;
+  while(1) {
+    print STDERR "parent: waiting for response\n";
+    my ($cmd, $val) = $self->receive('from_child');
 
-  print STDERR "parent: response: [$response_frozen]\n";
-  $response_frozen = pack('h*', $response_frozen);
-  print STDERR "parent: thawing response\n";
-  my $response = thaw($response_frozen);
-  print STDERR "Response: " . Dumper($response);
-  # $response = [200, ['Content-type' => 'text/html'],['<body>hello</body>']];
+    if($cmd eq 'response') {
+      print STDERR "Response: " . Dumper($val);
+      return $val;
 
-  return $response;
+    } elsif( $cmd eq 'read' ) {
+      my ($len, $offset) = @$val;
+      my $buf;
+      my $read_retval = $env->{'psgi.input'}->read($buf, $len, $offset);
+      $self->send( to_child => read_result => [$buf, $read_retval] );
+
+    } elsif( $cmd eq 'seek' ) {
+      my ($position, $whence) = @$val;
+      my $buf;
+      my $seek_retval = $env->{'psgi.input'}->seek($position, $whence);
+      $self->send( to_child => read_result => [$seek_retval]);
+    }
+  }
 
 }
 
+sub send {
+  my ($self, $dest, $type, $val) = @_;
+
+  my $dest_handle = $self->{$dest};
+
+  print STDERR "send $dest $type\n";
+  print STDERR Dumper($val);
+
+  print $dest_handle "$type\n";
+  $val = freeze($val);
+  $val = unpack('h*', $val);
+  print $dest_handle "$val\n";
+}
+
+sub receive {
+  my ($self, $source) = @_;
+
+  print STDERR "receive $source\n";
+
+  my $source_handle = $self->{$source};
+
+  my $cmd = <$source_handle>;
+  chomp $cmd;
+  
+  my $val = <$source_handle>;
+  chomp $val;
+  $val = pack('h*',$val);
+  $val = thaw($val);
+
+  return ($cmd, $val);
+}
 
 sub manage_child {
   my ($self) = @_;
   my $to_parent = $self->{to_parent};
   my $from_parent = $self->{from_parent};
+  my $input = Plack::Middleware::Debug::EBug::IOWrap->new( manager => $self );
   while(1) {
     print STDERR "child: waiting for env\n";
-    my $env_freeze = <$from_parent>;
-    chomp $env_freeze;
-    print STDERR "child: got env [$env_freeze]\n";
-    $env_freeze = pack('h*',$env_freeze);
-    print STDERR "child: thawing env\n";
-    my $env = thaw($env_freeze);
+    my ($cmd, $env) = $self->receive('from_parent');
+    $env->{'psgi.input'} = $input;
+
+    print STDERR "child: Loading debugger\n";
+    $ENV{PERLDB_OPTS} = "RemotePort=localhost:8080";
+    require Enbugger;
+    Enbugger->stop;
+
     print STDERR "child: Running \$app\n";
     my $response = $self->{app}->($env);
     print STDERR "child: sending response\n";
-    my $response_frozen = freeze($response);
-    $response_frozen = unpack('h*', $response_frozen);
-    print STDERR "child: sending [$response_frozen]\n";
-    print $to_parent $response_frozen;
-    print $to_parent "\n";
+
+    $self->send(to_parent => response => $response);
   }
+}
+
+package Plack::Middleware::Debug::EBug::IOWrap;
+
+sub new {
+  my $class = shift;
+  my $self = {@_};
+  return bless $self, $class;
+}
+
+sub read {
+  my ($self, $buf, $len, $offset) = @_;
+  $self->{manager}->send( to_parent => read => [$len, $offset] );
+  my ($cmd, $val) = $self->{manager}->receive('from_parent');
+  my ($bufval, $retval) = @$val;
+  $_[1] = $bufval;
+  return $retval;
+}
+
+sub seek {
+  my ($self, $position, $whence) = @_;
+  $self->{manager}->send( to_parent => seek => [$position, $whence] );
+  my ($cmd, $val) = $self->{manager}->receive('from_parent');
+  my ($retval) = @$val;
+  return $retval;
 }
 
 1;
