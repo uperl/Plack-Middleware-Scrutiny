@@ -1,6 +1,25 @@
 package Plack::Middleware::Scrutiny;
 
-# Connect with: socat READL-LISTEN:8080,reuseaddr
+=head1 NAME
+
+Plack::Middleware::Scrutiny - Scrutinize your app with a full debugger
+
+=head1 SYNPOSIS
+
+  builder {
+    enable 'Scrutiny';
+    $app;
+  };
+
+  # Now pass ?_scrutinize=1 to your app for an inline debugger
+
+=head1 DESCRIPTION
+
+THIS IS A PROOF OF CONCEPT, MUCH WORK REMAINS!
+
+This middleware adds an in-band debugger to your web application. When triggered (via a query string), your C<< $app >> is executed in a forked context under the L<Devel::ebug> debugger. Instead of getting your application output, you get a web-based debugger UI so you can step through your program's execution.
+
+=cut
 
 use strict;
 use warnings;
