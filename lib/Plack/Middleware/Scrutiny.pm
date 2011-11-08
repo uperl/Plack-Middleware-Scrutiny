@@ -29,11 +29,33 @@ use Socket;
 use IO::Handle;
 use Storable qw( freeze thaw );
 use Data::Dumper;
-use Debug::Client;
+# use Debug::Client;
+use Devel::ebug;
+use Plack::Request;
+use Try::Tiny;
+use File::ShareDir;
+use Plack::App::File;
+use Plack::Util::Accessor qw( files );
+
+sub prepare_app {
+  my $self = shift;
+  my $root = try { File::ShareDir::dist_dir('Plack-Middleware-Scrutiny') }
+    || 'share';
+  $self->files(Plack::App::File->new(root => $root));
+}
 
 sub call {
   my($self, $env) = @_;
   print STDERR "parent: got ->call\n";
+  if ($env->{PATH_INFO} =~ m!/scrutinize/!) {
+    $env->{PATH_INFO} =~ s!.*/scrutinize/!/!;
+    return $self->files->call($env);
+  }
+  my $q = Plack::Request->new($env);
+  if(!$self->{in_debugger} && !$q->param('_scrutinize')) {
+    print STDERR "parent: Calling original app\n";
+    return $self->{app}->($env);
+  }
 
   return sub {
     my $respond = shift;
@@ -93,14 +115,17 @@ sub new_request {
   $self->send( to_child => request => $env_trimmed );
 
   print STDERR "parent: Creating debug client\n";
-  $self->{debug_client} = Debug::Client->new(
-    host => 'localhost',
-    port => 8080,
-  );
+  # $self->{debug_client} = Debug::Client->new(
+    # host => 'localhost',
+    # port => 8080,
+  # );
+  use Devel::ebug;
+  $self->{debug_client} = Devel::ebug->new;
 
   # Wait for client to connect
+  sleep 1; # Give the client a second to get started
   print STDERR "parent: listening for debugger connect\n";
-  $self->{debug_client}->listen;
+  $self->{debug_client}->attach(4011, 'bukifra');
   print STDERR "parent: got it!\n";
 
   return $self->in_debugger($env, $respond);
@@ -117,10 +142,12 @@ sub in_debugger {
     $respond->($self->{response});
   }
 
-  my $cmd = $q->param('cmd') || 'show_line';
+  my $cmd = $q->param('cmd') || 'codeline';
   my $out;
   print STDERR "parent: sending $cmd to debugger\n";
   $out = $self->{debug_client}->$cmd;
+  $out = $self->{debug_client}->codeline;
+  # $out = join("\n", $self->{debug_client}->codelines(
   
   # Child has completed? If so just give that back
   if($self->{response}) {
@@ -135,12 +162,14 @@ sub in_debugger {
     ['Content-type' => 'text/html'],
     [qq|
       <html>
+        <head>
+          <link rel="stylesheet" type="text/css" href="/scrutinize/scrutinize.css" />
+        </head>
         <body>
           <h1>Scrutiny!</h1>
-          <a href="?cmd=step_in">Step In</a>
-          <a href="?cmd=step_over">Step Over</a>
+          <a href="?cmd=step">Step In</a>
+          <a href="?cmd=next">Step Over</a>
           <a href="?cmd=run">Run</a>
-          <a href="?cmd=get_stack_trace">Stacktrace</a>
           <a href="?cmd=get_stack_trace">Stacktrace</a>
           <pre>$out</pre>
         </body>
@@ -220,10 +249,13 @@ sub manage_child {
     $env->{'psgi.input'} = $input;
 
     # give the parent a second or two to start listening
-    sleep 1;
     print STDERR "child: Loading debugger\n";
-    $ENV{PERLDB_OPTS} = "RemotePort=localhost:8080";
+    # $ENV{PERLDB_OPTS} = "RemotePort=localhost:8080";
+    $ENV{SECRET} = 'bukifra';
     require Enbugger;
+    print STDERR "child: Loading ebug\n";
+    Enbugger->load_debugger('ebug');
+    print STDERR "child: stopping...\n";
     Enbugger->stop;
 
     print STDERR "child: Running \$app\n";
