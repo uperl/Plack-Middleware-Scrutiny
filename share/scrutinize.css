@@ -1,3 +1,26 @@
 /* hello */
 
+h1 {
+  border-bottom: 1px solid black;
+}
 
+#controls a {
+  border: 1px solid black;
+  padding: 5px 10px 5px;
+  margin: 5px;
+  text-decoration: none;
+  color: white;
+  background-color: #333;
+  border-radius: 10px;
+}
+
+#controls {
+  margin-bottom: 2em;
+}
+
+#code, #stack, #pad {
+  float: left;
+  border: 1px solid #333;
+  margin: 1em;
+  padding: 5px;
+}

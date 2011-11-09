@@ -24,7 +24,7 @@ Ideas for invocation / usage:
 UI
 * Code browser
 ** Numbered lines
-** Breakpoint set
+** Breakpoint set / show
 ** Roll-over / click to view variable values?
 ** Highlight current execution line
 * REPL

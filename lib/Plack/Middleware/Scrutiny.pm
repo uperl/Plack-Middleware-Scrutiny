@@ -6,12 +6,14 @@ Plack::Middleware::Scrutiny - Scrutinize your app with a full debugger
 
 =head1 SYNPOSIS
 
+  # This uses AnyEvent, so go with twiggy
+
   builder {
     enable 'Scrutiny';
     $app;
   };
 
-  # Now pass ?_scrutinize=1 to your app for an inline debugger
+  # Now pass ?_scrutinize=1 to your app, and you'll get an inline debugger
 
 =head1 DESCRIPTION
 
@@ -19,12 +21,26 @@ THIS IS A PROOF OF CONCEPT, MUCH WORK REMAINS!
 
 This middleware adds an in-band debugger to your web application. When triggered (via a query string), your C<< $app >> is executed in a forked context under the L<Devel::ebug> debugger. Instead of getting your application output, you get a web-based debugger UI so you can step through your program's execution.
 
+=head1 WHY
+
+I was wondering why people don't use the perl debugger more. I did some very unscientific interviews and came up with the idea that it isn't that people are horribly opposed (though some are), but rather that it just isn't at their fingertips. Unlike Firebug, or even prints to STDERR, firing up the debugger is a bit of complication that doesn't seem worth the effort.
+
+I'm hoping that putting C<< enable 'Scrutiny' >> into your L<Plack::Builder> setup will be worth the effort. Once this is working I'll probably look around for other ways to make this easy (like work on L<CGI::Inspect>).
+
+=head1 HOW
+
+When this middleware is activated, right now by the C<< _scrutinize=1 >> query param, it takes over the request. It forks into a parent and a child. The parent is what will talk to your browser for the debugging session, and the child is where your C<$app> is actually executed. It opens a set of unix pipes to talk back and forth.
+
+From there, the child uses L<Enbugger> to load up L<Devel::ebug::Backend> and gets ready to be debugged. Meanwhile the parent sets up L<Devel::ebug> to talk to the child. I initially did this with L<Debug::Client>, and that worked but I like the concept of L<Devel::ebug> a bit better.
+
+Finally, the parent outputs some HTML back to the browser with the actual UI. Future interactions from the browser are intercepted by the parent and considered commands to the debugger until the C<$app> has completed its execution. Upon completion, the output from C<$app> is finally sent to the browser instead of the debugger UI.
+
 =cut
 
 use strict;
 use warnings;
 use parent qw(Plack::Middleware);
-our $VERSION = '0.1';
+our $VERSION = '0.01';
 use Socket;
 use IO::Handle;
 use Storable qw( freeze thaw );
@@ -146,8 +162,18 @@ sub in_debugger {
   my $out;
   print STDERR "parent: sending $cmd to debugger\n";
   $out = $self->{debug_client}->$cmd;
-  $out = $self->{debug_client}->codeline;
+  $out = $self->show_codelines(10);
   # $out = join("\n", $self->{debug_client}->codelines(
+  #
+  my @trace = $self->{debug_client}->stack_trace_human;
+  my $stacktrace = join "\n", @trace;
+
+  my $pad_txt = '';
+  my $pad = $self->{debug_client}->pad_human;
+  foreach my $k (sort keys %$pad) {
+    my $v = $pad->{$k};
+    $pad_txt .= "  $k = $v;\n";
+  }
   
   # Child has completed? If so just give that back
   if($self->{response}) {
@@ -156,6 +182,10 @@ sub in_debugger {
     delete $self->{debug_client};
     $respond->($self->{response});
   }
+
+  my $line = $self->{debug_client}->line;
+  my $subroutine = $self->{debug_client}->subroutine;
+  my $package = $self->{debug_client}->package;
 
   $respond->([
     200,
@@ -167,16 +197,63 @@ sub in_debugger {
         </head>
         <body>
           <h1>Scrutiny!</h1>
-          <a href="?cmd=step">Step In</a>
-          <a href="?cmd=next">Step Over</a>
-          <a href="?cmd=run">Run</a>
-          <a href="?cmd=get_stack_trace">Stacktrace</a>
-          <pre>$out</pre>
+          <div id="controls">
+            <a href="?cmd=step">Step In</a>
+            <a href="?cmd=next">Step Over</a>
+            <a href="?cmd=return">Return</a>
+            <a href="?cmd=run">Run</a>
+          </div>
+          <div id="code">
+            <h2>Code</h2>
+            $package\::$subroutine ($line)
+            <pre class="perlCode">$out</pre>
+          </div>
+          <div id="pad">
+            <h2>Pad</h2>
+            <pre>$pad_txt</pre>
+          </div>
+          <div id="stack">
+            <h2>Stack Trace</h2>
+            <pre>$stacktrace</pre>
+          </div>
         </body>
       </html>
     |]
   ]);
 
+}
+
+my $codelines;
+sub show_codelines {
+  my ($self, $list_lines_count) = @_;
+  my $ebug = $self->{debug_client};
+
+  my $line_count = int($list_lines_count / 2);
+
+  if (not exists $codelines->{$ebug->filename}) {
+    $codelines->{$ebug->filename} = [$ebug->codelines];
+  }
+
+  my @span = ($ebug->line-$line_count .. $ebug->line+$line_count);
+  @span = grep { $_ > 0 } @span;
+  my @codelines = @{$codelines->{$ebug->filename}};
+  my @break_points = $ebug->break_points();
+  my %break_points;
+  $break_points{$_}++ foreach @break_points;
+  my $out = '';
+  foreach my $s (@span) {
+    my $codeline = $codelines[$s -1 ];
+    next unless defined $codeline;
+    if ($s == $ebug->line) {
+      $out .= "*";
+    } elsif ($break_points{$s}) {
+      $out .= "b";
+    } else {
+      $out .= " ";
+    }
+    $out .= "$s:$codeline\n";
+  }
+  return $out;
 }
 
 sub send {
@@ -257,6 +334,7 @@ sub manage_child {
     Enbugger->load_debugger('ebug');
     print STDERR "child: stopping...\n";
     Enbugger->stop;
+    $^P = 0;
 
     print STDERR "child: Running \$app\n";
     my $response = $self->{app}->($env);
@@ -268,6 +346,12 @@ sub manage_child {
 }
 
 package Plack::Middleware::Scrutiny::IOWrap;
+
+=head1 IO Wrapper
+
+The child needs to be sent the environment, but C<$env> has some IO handle-like thingts that aren't so easy to serialize. [editors note: WHY do we have to send it back and forth? Can we just fork with it?]. So the parent replaces those with an instance of C<Plack::Middleware::Scrutiny::IOWrap>, which just transmits the result of the methods accross the pipe.
+
+=cut
 
 sub new {
   my $class = shift;
@@ -295,6 +379,39 @@ sub seek {
   my ($retval) = @$val;
   return $retval;
 }
+
+package Plack::Middleware::Scrutiny;
+
+=head1 BUGS
+
+TONS I'm sure :)
+
+This is still just a sketch.
+
+=head1 TODO
+
+There are a TON of ways this could be taken, especially since this is just a proof-of-concept so far. Some things are probably needed pretty soon, such as session based debugging (right now ALL new requests go to the debugger).
+
+One significant thing that I'd like to do is to provide a more advanced separate window mode. In this mode you could explore code and set breakpoints (including on the path/query), and get a list of sessions that are currently awaiting your debugging. Selecting one would enter you into a debugging session. Handy for AJAXy stuff I think.
+
+
+=head1 SEE ALSO
+
+Code is on github: L<http://github.com/awwaiid/Scrutiny>
+
+Other fun stuff: L<Plack::Middleware>, L<Plack::Middleware::Debug>, L<Plack::Middleware::InteractiveDebugger>, L<Devel::ebug>
+
+=head1 AUTHOR
+
+  Brock Wilcox <awwaiid@thelackthereof.org> - http://thelackthereof.org/
+
+=head1 COPYRIGHT
+
+  Copyright (c) 2011 Brock Wilcox <awwaiid@thelackthereof.org>. All rights
+  reserved.  This program is free software; you can redistribute it and/or
+  modify it under the same terms as Perl itself.
+
+=cut
 
 1;
 

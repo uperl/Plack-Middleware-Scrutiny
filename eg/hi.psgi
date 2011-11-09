@@ -4,6 +4,7 @@ use v5.14;
 
 use Plack::Request;
 
+# my $app = sub {
 sub main {
   my $env = shift;
   my $q = Plack::Request->new($env);
