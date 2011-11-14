@@ -45,13 +45,14 @@ use Socket;
 use IO::Handle;
 use Storable qw( freeze thaw );
 use Data::Dumper;
-# use Debug::Client;
 use Devel::ebug;
 use Plack::Request;
 use Try::Tiny;
 use File::ShareDir;
 use Plack::App::File;
 use Plack::Util::Accessor qw( files );
+use Plack::Util;
+use Plack::Middleware::Scrutiny::IOWrap;
 
 sub prepare_app {
   my $self = shift;
@@ -162,11 +163,12 @@ sub in_debugger {
   my $out;
   print STDERR "parent: sending $cmd to debugger\n";
   $out = $self->{debug_client}->$cmd;
-  $out = $self->show_codelines(10);
+  $out = $self->show_codelines(30);
   # $out = join("\n", $self->{debug_client}->codelines(
   #
   my @trace = $self->{debug_client}->stack_trace_human;
   my $stacktrace = join "\n", @trace;
+  $stacktrace = Plack::Util::encode_html($stacktrace);
 
   my $pad_txt = '';
   my $pad = $self->{debug_client}->pad_human;
@@ -174,6 +176,18 @@ sub in_debugger {
     my $v = $pad->{$k};
     $pad_txt .= "  $k = $v;\n";
   }
+  $pad_txt = Plack::Util::encode_html($pad_txt);
+
+  $self->{eval_txt} ||= '';
+  my ($stdout, $stderr) = $self->{debug_client}->output;
+  $self->{eval_txt} .= $stdout;
+  # $self->{eval_txt} .= $stderr;
+  if($q->param('eval')) {
+    my $v = $self->{debug_client}->eval( $q->param('eval') );
+    $v = Dumper($v);
+    $self->{eval_txt} .= $v;
+  }
+  my $eval_txt = Plack::Util::encode_html( $self->{eval_txt} );
   
   # Child has completed? If so just give that back
   if($self->{response}) {
@@ -194,6 +208,20 @@ sub in_debugger {
       <html>
         <head>
           <link rel="stylesheet" type="text/css" href="/scrutinize/scrutinize.css" />
+          <script type="text/javascript" src="/scrutinize/jquery.js"></script>
+          <script type="text/javascript" src="/scrutinize/jquery.cookie.js"></script>
+          <script type="text/javascript" src="/scrutinize/splitter.js"></script>
+          <script type="text/javascript">
+            \$(function(){
+              \$('#MySplitter').splitter({
+                splitVertical: true,
+                outline: true,
+                resizeTo: window,
+                cookie: 'mysplitter',
+                sizeLeft: true
+              });
+            });
+          </script>
         </head>
         <body>
           <h1>Scrutiny!</h1>
@@ -203,18 +231,21 @@ sub in_debugger {
             <a href="?cmd=return">Return</a>
             <a href="?cmd=run">Run</a>
           </div>
-          <div id="code">
-            <h2>Code</h2>
-            $package\::$subroutine ($line)
-            <pre class="perlCode">$out</pre>
-          </div>
-          <div id="pad">
-            <h2>Pad</h2>
-            <pre>$pad_txt</pre>
-          </div>
-          <div id="stack">
+          <div id=MySplitter>
+            <div>
+              <h2>Code</h2>
+              $package\::$subroutine ($line)
+              <div class="perlCode">$out</div>
+              <h2>REPL</h2>
+              <pre>$eval_txt</pre>
+              &gt; <form id=evalform method=GET><input id=eval type=text name=eval></form>
+            </div>
+            <div>
+              <h2>Vars</h2>
+              <pre>$pad_txt</pre>
             <h2>Stack Trace</h2>
             <pre>$stacktrace</pre>
+            </div>
           </div>
         </body>
       </html>
@@ -242,16 +273,24 @@ sub show_codelines {
   $break_points{$_}++ foreach @break_points;
   my $out = '';
   foreach my $s (@span) {
+    my $line_out = '';
     my $codeline = $codelines[$s -1 ];
+    $codeline = Plack::Util::encode_html($codeline);
     next unless defined $codeline;
     if ($s == $ebug->line) {
-      $out .= "*";
+      $line_out .= "*";
     } elsif ($break_points{$s}) {
-      $out .= "b";
+      $line_out .= "b";
     } else {
-      $out .= " ";
+      $line_out .= " ";
     }
-    $out .= "$s:$codeline\n";
+    $line_out .= "$s:$codeline\n";
+    # $line_out =~ s/(.{1,80})/$1\n/gs;
+    $line_out = "<span class=codeline>$line_out</span>";
+    if($s == $ebug->line) {
+      $line_out = "<span class='curline'>$line_out</span>"
+    }
+    $out .= $line_out;
   }
   return $out;
 }
@@ -330,11 +369,13 @@ sub manage_child {
     # $ENV{PERLDB_OPTS} = "RemotePort=localhost:8080";
     $ENV{SECRET} = 'bukifra';
     require Enbugger;
+
     print STDERR "child: Loading ebug\n";
     Enbugger->load_debugger('ebug');
     print STDERR "child: stopping...\n";
     Enbugger->stop;
-    $^P = 0;
+    # $DB::single = 0;
+    # $^P = 0;
 
     print STDERR "child: Running \$app\n";
     my $response = $self->{app}->($env);
@@ -345,42 +386,27 @@ sub manage_child {
   }
 }
 
-package Plack::Middleware::Scrutiny::IOWrap;
-
-=head1 IO Wrapper
-
-The child needs to be sent the environment, but C<$env> has some IO handle-like thingts that aren't so easy to serialize. [editors note: WHY do we have to send it back and forth? Can we just fork with it?]. So the parent replaces those with an instance of C<Plack::Middleware::Scrutiny::IOWrap>, which just transmits the result of the methods accross the pipe.
-
-=cut
-
-sub new {
-  my $class = shift;
-  my $self = {@_};
-  return bless $self, $class;
+use Enbugger::ebug;
+package Enbugger::ebug;
+sub _load_debugger {
+  my ( $class ) = @_;
+print STDERR "here1\n";
+  $class->_compile_with_nextstate();
+  require Devel::ebug::Backend;
+  $class->_compile_with_dbstate();
+  $class->init_debugger;
+  return;
 }
 
-sub read {
-  my ($self, $buf, $len, $offset) = @_;
-  $self->{manager}->send( to_parent => read => [$len, $offset] );
-  my ($cmd, $val) = $self->{manager}->receive('from_parent');
-    # require Enbugger;
-    # Enbugger->stop;
-  my ($bufval, $retval) = @$val;
-  $_[1] = $bufval;
-  return $retval;
+sub _stop {
+  $DB::signal = 1;
+  return;
 }
 
-sub seek {
-  my ($self, $position, $whence) = @_;
-  $self->{manager}->send( to_parent => seek => [$position, $whence] );
-  my ($cmd, $val) = $self->{manager}->receive('from_parent');
-    # require Enbugger;
-    # Enbugger->stop;
-  my ($retval) = @$val;
-  return $retval;
-}
+# sub _write { }
 
 package Plack::Middleware::Scrutiny;
+
 
 =head1 BUGS
 
