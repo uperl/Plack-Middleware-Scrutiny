@@ -1,5 +1,4 @@
-Status: proof of concept. Also you'll need my Enbugger fork until
-Enbugger::ebug is accepted upstream.
+Status: proof of concept.
 
   # This uses AnyEvent, so go with twiggy
 

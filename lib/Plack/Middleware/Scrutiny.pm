@@ -19,6 +19,8 @@ Plack::Middleware::Scrutiny - Scrutinize your app with a full debugger
 
 THIS IS A PROOF OF CONCEPT, MUCH WORK REMAINS!
 
+Status: Kinda works!
+
 This middleware adds an in-band debugger to your web application. When triggered (via a query string), your C<< $app >> is executed in a forked context under the L<Devel::ebug> debugger. Instead of getting your application output, you get a web-based debugger UI so you can step through your program's execution.
 
 =head1 WHY
@@ -53,6 +55,9 @@ use Plack::App::File;
 use Plack::Util::Accessor qw( files );
 use Plack::Util;
 use Plack::Middleware::Scrutiny::IOWrap;
+#use lib '/home/awwaiid/projects/perl/Devel-ebug/lib';
+
+our $VERSION = '0.01';
 
 sub prepare_app {
   my $self = shift;
@@ -386,11 +391,12 @@ sub manage_child {
   }
 }
 
+# Until a new Enbugger is released, we'll just fix up the ebug loader
 use Enbugger::ebug;
 package Enbugger::ebug;
+our @ISA = 'Enbugger';
 sub _load_debugger {
   my ( $class ) = @_;
-print STDERR "here1\n";
   $class->_compile_with_nextstate();
   require Devel::ebug::Backend;
   $class->_compile_with_dbstate();
@@ -402,8 +408,6 @@ sub _stop {
   $DB::signal = 1;
   return;
 }
-
-# sub _write { }
 
 package Plack::Middleware::Scrutiny;
 
