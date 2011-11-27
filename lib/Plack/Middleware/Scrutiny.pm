@@ -46,9 +46,8 @@ This is documentation for maintainers, not for users.
 
 use strict;
 use warnings;
-use parent qw(Plack::Middleware);
+use parent 'Plack::Middleware';
 use IO::Handle;
-use Storable qw( freeze thaw );
 use Data::Dumper;
 use Plack::Request;
 use Try::Tiny;
@@ -56,26 +55,10 @@ use File::ShareDir;
 use Plack::App::File;
 use Plack::Util::Accessor qw( files );
 use Plack::Util;
+use Plack::Middleware::Scrutiny::Util;
 use Plack::Middleware::Scrutiny::IOWrap;
-use Time::HiRes qw( time );
+use Plack::Middleware::Scrutiny::Child;
 #use lib '/home/awwaiid/projects/perl/Devel-ebug/lib';
-
-sub debug(@) {
-  my ($who, @stuff) = @_;
-  open my $debug, '>>', 'debug.log' or die "Error opening debug.log";
-  my $time = sprintf("%0.05f", time());
-  $who = sprintf("% 6s", $who);
-  print $debug "$time $who: ";
-  foreach my $stuff (@stuff) {
-    if(ref $stuff) {
-      print $debug Dumper($stuff);
-    } else {
-      print $debug "$stuff\n";
-    }
-  }
-  close $debug;
-}
-
 
 =head2 $scrutiny->prepare_app
 
@@ -174,10 +157,15 @@ sub new_request {
   delete $env_trimmed->{'psgix.io'};
   delete $env_trimmed->{'psgi.errors'};
 
+  # We're doing InlineMode, so let's slurp the input
+  my $q = Plack::Request->new($env);
+  my $input = $q->content;
+  $env_trimmed->{'psgix.input_string'} = $input;
+
   # Get the child running
   debug parent => "sending fixed env";
   $self->send( to_child => request => $env_trimmed );
-  sleep 1; # Give the client a second to get started
+  # sleep 1; # Give the client a second to get started
 
   debug parent => "Creating debug client";
   require Devel::ebug;
@@ -186,11 +174,12 @@ sub new_request {
   debug parent => "trying to connect to child debugger";
   $self->{debug_client}->attach(4011, 'bukifra');
   debug parent => "connected!";
-  # debug parent => "Telling child via debugger to run";
-  # $self->{debug_client}->run();
+  debug parent => "Telling child via debugger to run";
+  $self->{debug_client}->run();
 
   # This will give the child handler a chance to receive a response from the
   # child, if any
+  # sleep 1;
   debug parent => "Setting up idle UI handler";
   $self->{idle} = AnyEvent->idle(
     cb => sub { $self->in_debugger($env, $respond) }
@@ -327,6 +316,7 @@ sub show_codelines {
   };
   debug parent => "err - $@";
   debug parent => "got codelines for file";
+  return unless $codelines->{$ebug->filename};
 
   my @span = ($ebug->line-$line_count .. $ebug->line+$line_count);
   @span = grep { $_ > 0 } @span;
@@ -360,42 +350,9 @@ sub show_codelines {
   return $out;
 }
 
-sub send {
-  my ($self, $dest, $type, $val) = @_;
-
-  my $dest_handle = $self->{$dest};
-  
-  my $from = $dest eq 'to_child' ? 'parent' : 'child';
-  debug $from, "send $dest $type $val";
- 
-  print $dest_handle "$type\n";
-  
-  $val = freeze($val);
-  $val = unpack('h*', $val);
-  print $dest_handle "$val\n";
-}
-
-sub receive {
-  my ($self, $source) = @_;
-
-  my $from = $source eq 'from_child' ? 'parent' : 'child';
-  debug $from, "receive $source";
-
-  my $source_handle = $self->{$source};
-
-  my $cmd = <$source_handle>;
-  chomp $cmd;
-  
-  my $val = <$source_handle>;
-  chomp $val;
-  $val = pack('h*',$val);
-  $val = thaw($val);
-
-  return ($cmd, $val);
-}
-
 sub start_child {
   my ($self) = @_;
+
   my ($to_child,  $from_child);
   my ($to_parent, $from_parent);
 
@@ -405,76 +362,29 @@ sub start_child {
   $to_child->autoflush(1);
   $to_parent->autoflush(1);
 
-  $self->{to_child}    = $to_child;
-  $self->{to_parent}   = $to_parent;
-  $self->{from_child}  = $from_child;
-  $self->{from_parent} = $from_parent;
-
   my $pid = fork();
   if(!$pid) {
     # child
-    $self->manage_child;
+    my $child = Plack::Middleware::Scrutiny::Child->new(
+      to_parent   => $to_parent,
+      from_parent => $from_parent,
+      to_child   => $to_child,
+      from_child => $from_child,
+      app         => $self->{app},
+    );
+    $child->manage_child;
+    exit;
+
   } else {
     # parent
     debug parent => "saving child pid $pid";
     $self->{child_pid} = $pid;
+    $self->{to_child}    = $to_child;
+    $self->{to_parent}   = $to_parent;
+    $self->{from_child}    = $from_child;
+    $self->{from_parent}   = $from_parent;
   }
 }
-
-sub manage_child {
-  my ($self) = @_;
-  my $to_parent = $self->{to_parent};
-  my $from_parent = $self->{from_parent};
-  my $input = Plack::Middleware::Scrutiny::IOWrap->new( manager => $self );
-
-  debug child => "waiting for env";
-  my ($cmd, $env) = $self->receive('from_parent');
-  $env->{'psgi.input'} = $input;
-
-  debug child => "Loading ebug";
-  $ENV{SECRET} = 'bukifra';
-  require Enbugger;
-  Enbugger->load_debugger('ebug');
-  # debug child => "Initial stop";
-  # Enbugger->stop; # Wait for connection and 'run'
-  # debug child => "Initial run";
-
-  my $q = Plack::Request->new($env);
-  debug child => "Checking for immediate break condition";
-  if($q->param('_scrutinize')) {
-    debug child => "stopping...";
-    Enbugger->stop if $q->param('_scrutinize');
-  }
-
-  debug child => "Running \$app";
-  my $response = $self->{app}->($env);
-  debug child => "sending response";
-
-  $self->send(to_parent => response => $response);
-  debug child => "response sent, exiting";
-  exit;
-}
-
-# Until a new Enbugger is released, we'll just fix up the ebug loader
-use Enbugger::ebug;
-package Enbugger::ebug;
-our @ISA = 'Enbugger';
-no warnings 'redefine';
-sub _load_debugger {
-  my ( $class ) = @_;
-  $class->_compile_with_nextstate();
-  require Devel::ebug::Backend;
-  $class->_compile_with_dbstate();
-  $class->init_debugger;
-  return;
-}
-
-sub _stop {
-  $DB::signal = 1;
-  return;
-}
-
-package Plack::Middleware::Scrutiny;
 
 
 =head1 BUGS
