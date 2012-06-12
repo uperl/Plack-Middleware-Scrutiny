@@ -47,6 +47,7 @@ This is documentation for maintainers, not for users.
 use strict;
 use warnings;
 use parent 'Plack::Middleware';
+use AnyEvent;
 use IO::Handle;
 use Data::Dumper;
 use Plack::Request;
@@ -368,8 +369,8 @@ sub start_child {
     my $child = Plack::Middleware::Scrutiny::Child->new(
       to_parent   => $to_parent,
       from_parent => $from_parent,
-      to_child   => $to_child,
-      from_child => $from_child,
+      to_child    => $to_child,
+      from_child  => $from_child,
       app         => $self->{app},
     );
     $child->manage_child;
@@ -378,11 +379,11 @@ sub start_child {
   } else {
     # parent
     debug parent => "saving child pid $pid";
-    $self->{child_pid} = $pid;
+    $self->{child_pid}   = $pid;
     $self->{to_child}    = $to_child;
     $self->{to_parent}   = $to_parent;
-    $self->{from_child}    = $from_child;
-    $self->{from_parent}   = $from_parent;
+    $self->{from_child}  = $from_child;
+    $self->{from_parent} = $from_parent;
   }
 }
 

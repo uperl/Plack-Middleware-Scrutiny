@@ -50,29 +50,5 @@ sub manage_child {
   exit;
 }
 
-# Until a new Enbugger is released, we'll just fix up the ebug loader
-use Enbugger::ebug;
-
-package Enbugger::ebug;
-use parent 'Enbugger';
-no warnings 'redefine';
-
-sub _load_debugger {
-  my ( $class ) = @_;
-  $class->_compile_with_nextstate();
-  require Devel::ebug::Backend;
-  $class->_compile_with_dbstate();
-  $class->init_debugger;
-  return;
-}
-
-sub _stop {
-  $DB::signal = 1;
-  return;
-}
-
-# Back to our regular namespace
-package Plack::Middleware::Scrutiny::Child;
-
 1;
 
